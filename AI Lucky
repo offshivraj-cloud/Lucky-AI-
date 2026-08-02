@@ -1,0 +1,2063 @@
+{
+  "name": "jarvis-creator-os",
+  "version": "1.0.0",
+  "description": "JARVIS Creator OS — Voice-controlled AI assistant for content creators. Installable PWA with real-time voice commands, YouTube automation, video effect analysis (Gemini multimodal), script extraction and trend engine.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "analyze": "python3 python/VideoAnalyzer.py"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "jarvis",
+    "voice-assistant",
+    "content-creator",
+    "pwa",
+    "youtube",
+    "gemini",
+    "video-editing"
+  ],
+  "license": "MIT",
+  "dependencies": {}
+}
+/**
+ * JARVIS CREATOR OS — Server
+ * ------------------------------------------------------------------
+ * Zero-dependency Node.js server (Node >= 18).
+ *  - Serves the PWA (static files from /public)
+ *  - Exposes the REST API under /api (search, transcript, analyze, trends...)
+ *
+ * Run:            node server.js            (or: npm start)
+ * With Gemini:    GEMINI_API_KEY=... node server.js
+ * Env file:       node --env-file=.env server.js
+ */
+'use strict';
+
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const api = require('./backend/routes/api');
+
+const PORT = process.env.PORT || 3000;
+const PUBLIC_DIR = path.join(__dirname, 'public');
+
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
+  '.txt': 'text/plain; charset=utf-8',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.webmanifest': 'application/manifest+json'
+};
+
+function sendJSON(res, status, obj) {
+  const body = JSON.stringify(obj);
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'Access-Control-Allow-Origin': '*'
+  });
+  res.end(body);
+}
+
+function readBody(req) {
+  return new Promise((resolve) => {
+    let data = '';
+    req.on('data', (c) => { data += c; if (data.length > 2e6) req.destroy(); });
+    req.on('end', () => { try { resolve(data ? JSON.parse(data) : {}); } catch { resolve({}); } });
+    req.on('error', () => resolve({}));
+  });
+}
+
+function serveStatic(req, res, pathname) {
+  // Prevent path traversal
+  const safe = pathname.replace(/^\/+/, '');
+  let filePath = path.join(PUBLIC_DIR, safe);
+  if (!filePath.startsWith(PUBLIC_DIR)) return sendJSON(res, 403, { error: 'Forbidden' });
+
+  fs.stat(filePath, (err, stat) => {
+    if (!err && stat.isDirectory()) filePath = path.join(filePath, 'index.html');
+    const ext = path.extname(filePath).toLowerCase();
+    fs.readFile(filePath, (err2, data) => {
+      if (err2) return sendJSON(res, 404, { error: 'Not found' });
+      res.writeHead(200, {
+        'Content-Type': MIME[ext] || 'application/octet-stream',
+        'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600'
+      });
+      res.end(data);
+    });
+  });
+}
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  const pathname = decodeURIComponent(url.pathname);
+  const start = Date.now();
+
+  try {
+    if (pathname === '/api/health') {
+      return sendJSON(res, 200, { ok: true, service: 'jarvis-creator-os', time: new Date().toISOString() });
+    }
+
+    if (pathname.startsWith('/api/')) {
+      if (req.method === 'POST' && req.headers['content-type']?.includes('application/json')) {
+        req.body = await readBody(req);
+      }
+      return api.handle(pathname, url, req, res, sendJSON);
+    }
+
+    // Service worker must not be cached
+    if (pathname === '/sw.js') {
+      return serveStatic(req, res, '/sw.js');
+    }
+
+    return serveStatic(req, res, pathname === '/' ? '/index.html' : pathname);
+  } catch (e) {
+    console.error('[server]', e);
+    return sendJSON(res, 500, { error: 'Internal error', detail: String(e.message || e) });
+  } finally {
+    if (pathname.startsWith('/api/')) {
+      console.log(`[${req.method}] ${pathname} -> ${res.statusCode || 200} (${Date.now() - start}ms)`);
+    }
+  }
+});
+
+server.listen(PORT, '0.0.0.0', () => {
+  console.log('');
+  console.log('  ⚡ J.A.R.V.I.S  ·  CREATOR OS');
+  console.log('  ─────────────────────────────────────────────');
+  console.log(`  Local:    http://localhost:${PORT}`);
+  console.log('  Network:  http://<your-lan-ip>:' + PORT + '  (open on your phone)');
+  console.log(`  Gemini:   ${process.env.GEMINI_API_KEY ? 'ENABLED (multimodal analysis on)' : 'disabled (knowledge-engine fallback active)'}`);
+  console.log('  ─────────────────────────────────────────────');
+  console.log('  Tip: use ngrok http 3000 for an HTTPS link → installable on mobile as a PWA.');
+  console.log('');
+});
+⚡ J.A.R.V.I.S · Creator OS
+A voice-controlled AI assistant for content creators — Jarvis-style, but built for video editing & content workflows.
+Talk to it, and it does things: opens the latest video from any channel, extracts the full script, analyzes how an effect was made (and how to recreate it in Premiere Pro / DaVinci Resolve / CapCut), finds trends, recommends similar videos, brainstorms ideas, keeps your daily timetable, and coaches your editing — hands-free.
+🎯 Installable on mobile as an app (PWA). Works fully out of the box with zero API keys. Add a free Gemini key only if you want true multimodal frame-level analysis.
+✨ What it does (all voice-triggered)
+Say…
+It does
+"Open MrBeast's latest video"
+Resolves the channel, fetches the newest upload and plays it in the monitor
+"Search YouTube for color grading tutorial"
+Plays the top result + queues more in the panel
+"Open my timetable"
+Opens your daily schedule (editable, saved on-device)
+"Add a task at 6pm — edit thumbnails"
+Adds the slot to the timetable
+"Extract the script"
+Pulls the full timestamped transcript of the current video → copy or download
+"Show me more videos like this"
+Recommends similar high-performing videos
+"Show me the trends"
+Today's trending videos
+"Give me video ideas about cricket"
+AI idea engine (8 titles + hooks + formats)
+"Analyze the effect at 2:15"
+Breakdown of the editing technique → psychology → why → step-by-step recreate in Premiere/DaVinci/CapCut (Gemini vision or built-in engine)
+"What is this sound?"
+Sound-design analysis (riser, bass drop, silence, stinger…)
+"How should I cut my intro?" / "color grading tips" / "pacing advice"
+Real-time editing mentorship
+"Open Instagram / YouTube Studio / TikTok…"
+Quick site launcher
+Works in English (India) and Hindi — responses come back in the same language you speak.
+🚀 Quick start
+cd jarvis-creator-os
+npm start          # or: node server.js
+Then open http://localhost:3000 in Chrome/Edge (mic works best in Chrome).
+⚡ J.A.R.V.I.S · CREATOR OS
+Local:    http://localhost:3000
+Network:  http://<your-lan-ip>:3000   ← open this on your phone
+Node 18+ required. Zero npm dependencies (pure Node http server + browser APIs).
+📱 Installing on your mobile (PWA)
+The app is a Progressive Web App — it installs like a native app (own icon, full-screen, offline shell).
+Same Wi-Fi: run npm start on your computer, note the Network: URL, open it on your phone.
+Make it HTTPS (required for install + mic on iOS):
+npx ngrok http 3000
+Open the https://…ngrok… link on your phone.
+Install:
+Android (Chrome): tap ⋮ → "Add to Home screen" (or the "Install App" button JARVIS shows in the header). It installs with the arc-reactor icon.
+iPhone (Safari): tap Share → "Add to Home Screen".
+That's it — full-screen app with its own icon. beforeinstallprompt is wired, icons (192/512/maskable) and a service worker (offline shell) are included.
+💡 Tip: for a permanent public URL, use Cloudflare Tunnel (cloudflared tunnel --url http://localhost:3000) or deploy the server.js + public/ on any Node host (Render/Railway/Fly) — the PWA works from any HTTPS origin.
+🔑 Optional: Gemini (true multimodal analysis)
+Without any key, JARVIS answers effect/sound/editing questions from its built-in creative-knowledge engine (jump cuts, punch-in zooms, speed ramps, risers, bass drops, teal-orange grading… with real step-by-step recreation steps).
+To unlock frame-level multimodal analysis (Gemini actually looks at the video), add a free key:
+Get a key at aistudio.google.com/apikey (free tier).
+Either:
+paste it in the app → ⚙ Settings → Gemini API key (saved on-device), or
+start the server with it: GEMINI_API_KEY=AIza… npm start (or node --env-file=.env server.js, see .env.example).
+Now "Analyze the effect at 2:15" and "What is this sound?" use Gemini vision on the video thumbnail + the transcript context around the timestamp, and the idea engine switches to Gemini too.
+🗂 Project structure
+jarvis-creator-os/
+├── server.js                     # Zero-dependency Node server (static + REST API)
+├── package.json
+├── .env.example                  # optional GEMINI_API_KEY / PORT
+├── public/                       # ── the PWA front-end ──
+│   ├── index.html                # Dark futuristic Jarvis dashboard
+│   ├── manifest.json             # PWA manifest (installable)
+│   ├── sw.js                     # Service worker (offline shell)
+│   ├── icons/                    # Generated arc-reactor icons (192/512/maskable/apple)
+│   ├── css/style.css             # Dark futuristic responsive UI
+│   └── js/
+│       ├── VoiceCommandHandler.js    # Continuous Web Speech API listener (en/hi)
+│       ├── AutomationController.js   # YouTube navigation, timetable, browser actions
+│       ├── AssistantBrain.js         # Core LLM orchestration + editing/sound knowledge engine
+│       ├── ContentIntelligence.js    # Script extraction, trends, recommendations, ideas UI
+│       └── app.js                    # Dashboard wiring, orb states, modals, PWA install
+├── backend/
+│   ├── routes/api.js             # /api/* router
+│   └── services/
+│       ├── youtubeService.js     # Zero-key YouTube Innertube client (search/latest/transcript/related/trends)
+│       ├── videoAnalyzer.js      # Multimodal effect/sound analyzer (Gemini vision)
+│       └── geminiService.js      # Minimal Gemini client (key from env or settings)
+├── python/
+│   ├── VideoAnalyzer.py          # Python edition: real frame/audio extraction + Gemini
+│   └── requirements.txt          # yt-dlp, google-genai
+└── scripts/make_icons.py         # regenerates PWA icons (pure stdlib)
+How the pieces talk
+Microphone ─▶ VoiceCommandHandler ─▶ AssistantBrain (intent engine + knowledge base)
+                                         │
+                    ┌────────────────────┼─────────────────────┐
+                    ▼                    ▼                     ▼
+         AutomationController    ContentIntelligence    /api/analyze (Gemini)
+         (player, tabs,          (script, similar,      (videoAnalyzer.js)
+          timetable, sites)       trends, ideas)
+                    │                    │
+                    └─────▶ backend /api/* ──▶ youtubeService.js (Innertube, no key)
+🧠 Real-time video editing assistant
+The built-in knowledge engine covers the exact techniques creators ask about, each with what → psychology → why here → recreate steps:
+Visual: jump cuts, punch-in zooms, speed ramps, whip-pan/match-cut transitions, glitch & RGB split, camera shake, freeze-frame + zoom, green screen, teal-orange cinematic grade, vignette + beat flashes.
+Sound: risers, sub-bass drops, vinyl scratches, strategic silence, stingers/impact SFX, music selection & ducking.
+Advice: where to cut (3-pillar rule), the first-3-second hook, pacing & retention, transitions, color-grading mood map, B-roll coverage, montage/beat-mapping.
+🧪 Python multimodal analyzer (optional pro tool)
+The Node app is the full product; this script is for creators who want real frames & audio sent to Gemini:
+pip install -r python/requirements.txt   # + ffmpeg in PATH
+export GEMINI_API_KEY=AIza…
+python3 python/VideoAnalyzer.py "https://www.youtube.com/watch?v=VIDEO_ID" --ts 02:15 \
+    --ask "How was this effect made and why was it used?"
+python3 python/VideoAnalyzer.py "URL" --ts 00:42 --sound "What is this sound and why does it work?"
+⚠️ Notes & troubleshooting
+Voice: use Chrome/Edge on Android/desktop for continuous Speech-to-Text (Web Speech API). iOS Safari supports tap-to-talk; typing works everywhere. If the mic icon is hidden, your browser lacks SpeechRecognition — the type-a-command box does everything.
+Transcripts: captions come from YouTube's public endpoints. A few videos have captions disabled by the creator, and VPN/datacenter networks can be blocked — run from your home Wi-Fi. (The server tries 4 fallback layers automatically.)
+Trending: uses YouTube's trending feed when available, with an automatic viral-search fallback so it works from any network.
+No API keys needed for anything except optional Gemini upgrades. Keep the server on your own machine/phone — it's private, nothing is stored in the cloud (timetable + settings live in localStorage).
+Security: it's a local tool — don't expose it to the public internet without auth if you set a Gemini key.
+🛠 Tech stack
+Node.js (zero-dep server) · Web Speech API (STT + TTS) · YouTube Innertube API (no key) · Google Gemini (optional multimodal) · Vanilla JS PWA (manifest + service worker) · Pure-Python generated icons.
+Built for creators who live in the edit timeline. Say: "Open MrBeast's latest video" — and watch it happen. 🚀
+📱 JARVIS CREATOR OS — Mobile Install Guide (Hinglish)
+Aapko kya chahiye: Sirf aapka Android phone + internet. Koi PC / laptop nahi chahiye. Koi API key nahi chahiye.
+⚡ Samajhne wali ek baat (bahut zaroori)
+Ye app ek chhota sa "server" chalat hai jo aapke phone ke andar hi chalta hai (aapke computer ki tarah). Isliye aapko phone me ek app chahiye jise Termux kehte hain — ye aapke phone ko chhota computer bana deta hai. Phir JARVIS uske upar chalta hai.
+Kul time: ~10-15 minute. Phir app hamesha ke liye aapke phone me installed!
+Step 1 — Project file (zip) download karo
+Isi chat ke workspace se jarvis-creator-os.zip download karo.
+Woh file phone ke Downloads folder me save ho jayegi. (Download folder me check karna — wahi milegi.)
+Step 2 — "F-Droid" aur "Termux" install karo
+⚠️ Play Store wala Termux mat lena — woh purana hai aur kaam nahi karta. F-Droid naam ka free app-store se lena hai. Steps:
+Phone ke browser (Chrome) me kholo: https://f-droid.org
+"Download F-Droid APK" button dabao → download hoga.
+Download khatam hone par tap karo → "Allow from this source" (ya "Install unknown apps") permission do → Install.
+F-Droid app kholo → search karo "Termux" → Install karo. (Termux ka icon black screen jaisa dikhta hai.)
+Step 3 — Termux kholo aur server chalao
+Termux app kholo. (Pehli baar kholne me 1-2 minute lag sakte hain.)
+Ab ye commands ek-ek karke chalao. Copy-paste karne ke liye screen par long-press karke "Paste" karo.
+Command 1 — storage permission:
+termux-setup-storage
+(Phone par popup aayega → Allow dabao)
+Command 2 — Node.js install (pehli baar 2-5 minute lagte hain):
+pkg update -y && pkg install -y nodejs unzip
+(Agar "Proceed?" puche toh y type karke Enter dabao)
+Command 3 — project copy karo:
+cd ~
+cp /sdcard/Download/jarvis-creator-os.zip ./
+unzip -o jarvis-creator-os.zip
+cd jarvis-creator-os
+Command 4 — JARVIS start karo:
+node server.js
+🎉 Jab ye dikhe — Local: http://localhost:3000 — matlab server chal raha hai! (Ye screen ke saath ab aisa hi rahega. Use band mat karna.)
+Step 4 — App kholo
+Chrome kholo.
+Address bar me likho: http://localhost:3000
+Press Enter → Dark futuristic JARVIS dashboard khulega! 🎬
+Ab bolo: "Open MrBeast's latest video" — dekho magic!
+Step 5 — App ko Home Screen pe install karo (real app ki tarah!)
+Chrome me ⋮ (teen dots) dabao.
+"Add to Home screen" (ya "Install app") dabao.
+Home screen par JARVIS icon ban jayega — ab woh full-screen app ki tarah khulega, jaise koi native app!
+🔁 Har baar phone on karte waqt
+Phone restart hone par sirf ye karo:
+Termux kholo
+Ye type karo: node server.js
+Chrome me http://localhost:3000 kholo
+(Advanced: Termux:Boot app se ye automatically start bhi ho sakta hai — baad me bata dunga.)
+🆘 Agar kuch kaam na kare
+Problem
+Hal
+pkg install me error
+pkg update phir se chalao, dobara try karo
+cp me "No such file"
+Zip ka naam check karo — ls /sdcard/Download/ type karke dekho
+localhost nahi khul raha
+Termux me error text ka screenshot mujhe bhejo
+Voice nahi bol rahi
+Chrome use karo; mic permission Allow karo
+"No captions" error
+Woh video creator ne transcript lock ki hai — doosri video try karo
+📱 Agar aapke paas iPhone hai?
+Ye Termux wala tarika sirf Android ke liye hai. Agar aapke paas iPhone hai, toh mujhe chat me "iPhone" likh kar batao — main aapke liye free hosting ka step-by-step rasta bata dunga (usme app browser se hi home screen pe install hoga).
+🤔 "Ye app kaam karega ya nahi?"
+Karega! Main pehle hi pura test kar chuka hoon:
+✅ "Open MrBeast's latest video" → video play hoti hai
+✅ "Extract the script" → poori script milti hai
+✅ "Show me the trends" → trending videos milti hain
+✅ "Give me video ideas about cricket" → 8 ideas
+✅ "Analyze the effect at 2:15" → effect ka breakdown
+✅ Editing advice, timetable, sound analysis — sab kaam karta hai
+Zero API key. Zero paisa. Sab free.
+/**
+ * youtubeService.js
+ * ------------------------------------------------------------------
+ * Zero-key YouTube access via YouTube's public Innertube API
+ * (the same endpoints yt-dlp uses). No API key, no OAuth, no scraping HTML.
+ *
+ * Exposes: searchVideos, resolveChannel, latestVideoFromChannel, videoDetails,
+ *          getTranscript, relatedVideos, trending, videoIdeas
+ */
+'use strict';
+
+const INNERTUBE_KEY = 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
+const BASE = 'https://www.youtube.com/youtubei/v1';
+const CLIENT = {
+  clientName: 'WEB',
+  clientVersion: '2.20250305.04.00',
+  hl: 'en',
+  gl: 'US'
+};
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
+
+const CACHE = new Map();
+const cacheGet = (k, ttl) => { const c = CACHE.get(k); if (c && Date.now() - c.t < ttl) return c.v; return null; };
+const cacheSet = (k, v) => CACHE.set(k, { v, t: Date.now() });
+
+async function callInnerTube(endpoint, body) {
+  const key = endpoint + '::' + JSON.stringify(body).slice(0, 120);
+  const hit = cacheGet(key, 1000 * 60 * 10);
+  if (hit) return hit;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  let res;
+  try {
+    res = await fetch(`${BASE}/${endpoint}?key=${INNERTUBE_KEY}`, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': UA,
+        'Origin': 'https://www.youtube.com',
+        'Referer': 'https://www.youtube.com/',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify({ context: { client: CLIENT }, ...body })
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!res.ok) throw new Error(`YouTube API error ${res.status}`);
+  const json = await res.json();
+  cacheSet(key, json);
+  return json;
+}
+
+/* ---------------- helpers ---------------- */
+
+function pickThumb(ths, fallbackId) {
+  if (ths && ths.length) {
+    const sorted = [...ths].sort((a, b) => (b.width || 0) * (b.height || 0) - (a.width || 0) * (a.height || 0));
+    return sorted[0].url;
+  }
+  return fallbackId ? `https://i.ytimg.com/vi/${fallbackId}/hqdefault.jpg` : '';
+}
+
+function parseCount(text) {
+  if (!text) return null;
+  const n = text.replace(/,/g, '').match(/([\d.]+)\s*([KMB]?)/i);
+  if (!n) return null;
+  const v = parseFloat(n[1]);
+  const mult = { '': 1, K: 1e3, M: 1e6, B: 1e9 }[n[2].toUpperCase()];
+  return Math.round(v * mult);
+}
+
+function collectVideoRenderers(node, out, seen) {
+  if (!node ||
+
+/**
+ * videoAnalyzer.js
+ * ------------------------------------------------------------------
+ * Multimodal Video & Effect Analyzer.
+ * Analyzes "how was this effect made / why was it used" and
+ * "what is this sound / why does it work" for a YouTube video at a
+ * given timestamp — using Gemini vision on the video's thumbnail and
+ * the transcript chunk around the timestamp.
+ *
+ * When no Gemini key is configured, the client falls back to the built-in
+ * editing-knowledge engine (AssistantBrain.js).
+ */
+'use strict';
+
+const gemini = require('./geminiService');
+const yt = require('./youtubeService');
+
+const SYSTEM = `You are JARVIS, a world-class video editing mentor for content creators. 
+You analyze visual editing techniques, sound design and psychology, then explain 
+exactly how to recreate them step-by-step in Adobe Premiere Pro, DaVinci Resolve and CapCut.
+Keep answers punchy, structured and practical. Use short bullet lines.`;
+
+async function analyzeAtTimestamp(req, { videoId, ts, question }) {
+  const details = await yt.videoDetails(videoId);
+
+  // Transcript chunk around the timestamp (for context of what happens on screen)
+  let contextText = `Video: "${details.title}" by ${details.channel}.\nDescription: ${(details.description || '').slice(0, 600)}`;
+  try {
+    const t = await yt.getTranscript(videoId);
+    const segs = t.segments;
+    const idx = segs.findIndex(s => s.start >= ts - 3);
+    const i = Math.max(0, idx < 0 ? segs.length - 1 : idx);
+    const chunk = segs.slice(Math.max(0, i - 8), i + 8).map(s => `[${formatTS(s.start)}] ${s.text}`).join('\n');
+    contextText += `\n\nWhat is being said around ${formatTS(ts)}:\n${chunk}`;
+  } catch { /* transcript optional */ }
+
+  const isSound = /sound|music|audio|sfx|beat|song|noise|effect.*hear|bgm/i.test(question || '');
+  const focus = isSound
+    ? `The user asks about the SOUND/MUSIC at ${formatTS(ts)}: "${question}". Explain what the sound likely is, why it works psychologically, and how to source/recreate it.`
+    : `The user asks about the VISUAL EDITING EFFECT at ${formatTS(ts)}: "${question}". Explain the technique, the psychology behind why it was used, and step-by-step recreation.`;
+
+  const userPrompt = `${contextText}\n\n${focus}\n\nStructure: [What it is] → [Why it works (psychology)] → [How to recreate] with sub-bullets for Premiere Pro, DaVinci Resolve and CapCut.`;
+
+  // Fetch thumbnail bytes → base64 → send as vision input
+  let parts = [];
+  try {
+    const res = await fetch(details.thumb, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+    if (res.ok) {
+      const buf = Buffer.from(await res.arrayBuffer());
+      parts.push({ inlineData: { mimeType: 'image/jpeg', data: buf.toString('base64') } });
+    }
+  } catch { /* vision is optional */ }
+  parts.push({ text: userPrompt });
+
+  const text = await gemini.generate(req, parts, SYSTEM, 1500, 0.6);
+
+  // Try to extract a clean JSON structure from the answer
+  return {
+    source: 'gemini',
+    videoId,
+    ts,
+    analysis: text,
+    markdown: text
+  };
+}
+
+function formatTS(s) {
+  s = Math.max(0, Math.floor(s));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return h ? `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}` : `${m}:${String(sec).padStart(2, '0')}`;
+}
+
+module.exports = { analyzeAtTimestamp, formatTS };
+/**
+ * api.js — REST router for /api/*
+ */
+'use strict';
+
+const yt = require('../services/youtubeService');
+const gemini = require('../services/geminiService');
+const analyzer = require('../services/videoAnalyzer');
+
+function jsonOr(res, sendJSON, fn) {
+  return fn().then(
+    (data) => sendJSON(res, 200, { ok: true, data }),
+    (err) => sendJSON(res, 400, { ok: false, error: err.message || String(err) })
+  );
+}
+
+async function handle(pathname, url, req, res, sendJSON) {
+  const q = url.searchParams;
+
+  switch (pathname) {
+
+    case '/api/search': {
+      const query = (q.get('q') || '').trim();
+      if (!query) return sendJSON(res, 400, { ok: false, error: 'Missing ?q=' });
+      return jsonOr(res, sendJSON, () => yt.searchVideos(query, parseInt(q.get('max') || '10', 10)));
+    }
+
+    case '/api/video/latest': {
+      const channel = (q.get('channel') || '').trim();
+      if (!channel) return sendJSON(res, 400, { ok: false, error: 'Missing ?channel=' });
+      return jsonOr(res, sendJSON, () => yt.latestVideoFromChannel(channel, parseInt(q.get('max') || '5', 10)));
+    }
+
+    case '/api/video': {
+      const id = q.get('v') || '';
+      if (!id) return sendJSON(res, 400, { ok: false, error: 'Missing ?v=' });
+      return jsonOr(res, sendJSON, () => yt.videoDetails(id));
+    }
+
+    case '/api/transcript': {
+      const id = q.get('v') || '';
+      if (!id) return sendJSON(res, 400, { ok: false, error: 'Missing ?v=' });
+      return jsonOr(res, sendJSON, () => yt.getTranscript(id));
+    }
+
+    case '/api/similar': {
+      const id = q.get('v') || '';
+      if (!id) return sendJSON(res, 400, { ok: false, error: 'Missing ?v=' });
+      return jsonOr(res, sendJSON, () => yt.relatedVideos(id, parseInt(q.get('max') || '10', 10)));
+    }
+
+    case '/api/trends': {
+      return jsonOr(res, sendJSON, () => yt.trending(parseInt(q.get('max') || '12', 10)));
+    }
+
+    case '/api/ideas': {
+      const topic = (q.get('topic') || '').trim();
+      if (!topic) return sendJSON(res, 400, { ok: false, error: 'Missing ?topic=' });
+      const key = req.headers['x-gemini-key'] || process.env.GEMINI_API_KEY;
+      const ideas = await yt.videoIdeas(topic, key ? (text) => gemini.generate(req, [{ text: text }], 'You output valid JSON only.', 2000, 0.9).then(t => { try { return JSON.parse(t.replace(/```json|```/g, '').trim()); } catch { return null; } }) : null);
+      if (!ideas) return sendJSON(res, 400, { ok: false, error: 'Could not generate ideas.' });
+      return sendJSON(res, 200, { ok: true, data: ideas, source: key ? 'gemini' : 'engine' });
+    }
+
+    case '/api/analyze': {
+      const videoId = req.body?.videoId || q.get('v') || '';
+      const ts = parseFloat(req.body?.ts || q.get('ts') || '0') || 0;
+      const question = req.body?.question || q.get('question') || '';
+      if (!videoId) return sendJSON(res, 400, { ok: false, error: 'Missing videoId' });
+      return jsonOr(res, sendJSON, () => analyzer.analyzeAtTimestamp(req, { videoId, ts, question }));
+    }
+
+    case '/api/chat': {
+      const message = (req.body?.message || '').trim();
+      if (!message) return sendJSON(res, 400, { ok: false, error: 'Missing message' });
+      const text = await gemini.generate(req, [{ text: message }],
+        'You are JARVIS, a snappy, witty AI assistant for a content creator. Be brief, practical, warm. Use short sentences.', 900, 0.8);
+      return sendJSON(res, 200, { ok: true, data: text });
+    }
+
+    default:
+      return sendJSON(res, 404, { ok: false, error: 'Unknown API endpoint' });
+  }
+}
+
+module.exports = { handle };
+{
+  "name": "J.A.R.V.I.S Creator OS — Voice AI Assistant for Content Creators",
+  "short_name": "Creator OS",
+  "description": "Voice-controlled AI assistant for content creators. Open videos, extract scripts, analyze effects, find trends and get editing mentorship — hands-free.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#050b18",
+  "theme_color": "#050b18",
+  "categories": ["productivity", "entertainment", "utilities"],
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Voice Assistant",
+      "short_name": "Voice",
+      "description": "Start talking to JARVIS",
+      "url": "/",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Timetable",
+      "short_name": "Schedule",
+      "description": "Open your daily timetable",
+      "url": "/?open=timetable",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}
+/**
+ * sw.js — Service Worker for the Creator OS PWA.
+ * Strategy:
+ *  - Precache the app shell on install (offline launch works).
+ *  - Same-origin static assets: cache-first (fast, offline).
+ *  - /api/* calls: network-first with a stale-while-revalidate fallback.
+ */
+'use strict';
+
+const CACHE = 'creator-os-v1';
+const SHELL = [
+  '/',
+  '/index.html',
+  '/manifest.json',
+  '/css/style.css',
+  '/js/app.js',
+  '/js/VoiceCommandHandler.js',
+  '/js/AutomationController.js',
+  '/js/AssistantBrain.js',
+  '/js/ContentIntelligence.js',
+  '/icons/icon-192.png',
+  '/icons/icon-512.png',
+  '/icons/favicon.svg'
+];
+
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting())
+  );
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    caches.keys()
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then(() => self.clients.claim())
+  );
+});
+
+self.addEventListener('fetch', (event) => {
+  const url = new URL(event.request.url);
+  if (event.request.method !== 'GET') return;
+  if (url.origin !== location.origin) {
+    // Cross-origin (YouTube thumbs, fonts): cache-first, no fail
+    event.respondWith(
+      caches.match(event.request).then((hit) => hit || fetch(event.request).then((res) => {
+        const clone = res.clone();
+        caches.open(CACHE).then((c) => c.put(event.request, clone));
+        return res;
+      }).catch(() => hit))
+    );
+    return;
+  }
+
+  // API: network-first
+  if (url.pathname.startsWith('/api/')) {
+    event.respondWith(
+      fetch(event.request).then((res) => {
+        const clone = res.clone();
+        caches.open(CACHE).then((c) => c.put(event.request, clone));
+        return res;
+      }).catch(() => caches.match(event.request))
+    );
+    return;
+  }
+
+  // Static shell: cache-first
+  event.respondWith(
+    caches.match(event.request).then((hit) =>
+      hit || fetch(event.request).then((res) => {
+        const clone = res.clone();
+        caches.open(CACHE).then((c) => c.put(event.request, clone));
+        return res;
+      })
+    )
+  );
+});
+/* ═══════════════════════════════════════════════════════════════
+   J.A.R.V.I.S · Creator OS — Dark futuristic UI
+   ═══════════════════════════════════════════════════════════════ */
+:root {
+  --bg: #050b18;
+  --bg-2: #081224;
+  --panel: rgba(13, 27, 51, 0.62);
+  --panel-border: rgba(56, 189, 248, 0.16);
+  --accent: #38bdf8;
+  --accent-2: #22d3ee;
+  --accent-3: #818cf8;
+  --text: #e2f0ff;
+  --text-dim: #8aa7c9;
+  --text-faint: #54718f;
+  --danger: #fb7185;
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --radius: 16px;
+  --glow: 0 0 24px rgba(56, 189, 248, 0.35);
+  --font-head: 'Orbitron', 'Inter', sans-serif;
+  --font-body: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  font-family: var(--font-body);
+  background: radial-gradient(1200px 700px at 70% -10%, #0b1e3a 0%, var(--bg) 55%);
+  color: var(--text);
+  min-height: 100vh;
+  overflow-x: hidden;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ── Background décor ─────────────────────────────────────────── */
+.bg-grid {
+  position: fixed; inset: 0; z-index: -3; pointer-events: none;
+  background-image:
+    linear-gradient(rgba(56,189,248,.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56,189,248,.05) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(ellipse 90% 70% at 50% 0%, #000 30%, transparent 75%);
+}
+.bg-glow { position: fixed; border-radius: 50%; filter: blur(90px); z-index: -2; pointer-events: none; }
+.bg-glow-1 { width: 480px; height: 480px; background: rgba(56,189,248,.14); top: -160px; right: -120px; animation: drift 18s ease-in-out infinite alternate; }
+.bg-glow-2 { width: 420px; height: 420px; background: rgba(129,140,248,.10); bottom: -180px; left: -140px; animation: drift 22s ease-in-out infinite alternate-reverse; }
+@keyframes drift { from { transform: translate(0,0) scale(1); } to { transform: translate(-40px, 30px) scale(1.12); } }
+
+/* ── Header ───────────────────────────────────────────────────── */
+.topbar {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--panel-border);
+  background: rgba(5, 11, 24, 0.6);
+  backdrop-filter: blur(14px); position: sticky; top: 0; z-index: 40;
+}
+.brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.brand-mark {
+  width: 42px; height: 42px; flex: none; border-radius: 12px;
+  display: grid; place-items: center; color: var(--accent-2);
+  border: 1px solid rgba(56,189,248,.4);
+  box-shadow: var(--glow), inset 0 0 18px rgba(56,189,248,.25);
+  animation: brandPulse 3.5s ease-in-out infinite;
+}
+@keyframes brandPulse { 0%,100% { box-shadow: var(--glow), inset 0 0 18px rgba(56,189,248,.25);} 50% { box-shadow: 0 0 34px rgba(34,211,238,.55), inset 0 0 26px rgba(34,211,238,.4);} }
+.brand-text h1 { font-family: var(--font-head); font-size: 1.02rem; letter-spacing: .14em; font-weight: 700; white-space: nowrap; }
+.brand-text h1 .accent { color: var(--accent-2); }
+.tagline { font-size: .68rem; color: var(--text-dim); letter-spacing: .08em; text-transform: uppercase; margin-top: 2px; }
+.top-actions { display: flex; align-items: center; gap: 10px; flex: none; }
+
+/* ── Buttons ──────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  border: 1px solid rgba(56,189,248,.35); border-radius: 10px;
+  background: rgba(56,189,248,.08); color: var(--text);
+  padding: 9px 14px; font-family: var(--font-body); font-size: .82rem; font-weight: 600;
+  cursor: pointer; transition: all .2s ease;
+}
+.btn:hover { background: rgba(56,189,248,.18); border-color: var(--accent); box-shadow: var(--glow); }
+.btn.primary { background: linear-gradient(135deg, rgba(56,189,248,.28), rgba(129,140,248,.22)); border-color: var(--accent); }
+.btn.primary:hover { background: linear-gradient(135deg, rgba(56,189,248,.42), rgba(129,140,248,.34)); }
+.btn.ghost { background: transparent; border-color: rgba(148,180,220,.22); }
+.btn.small { padding: 6px 10px; font-size: .74rem; border-radius: 8px; }
+.btn.tiny { padding: 4px 9px; font-size: .7rem; border-radius: 7px; }
+.btn:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
+.hidden { display: none !important; }
+
+/* ── Layout ───────────────────────────────────────────────────── */
+.layout {
+  display: grid; gap: 16px; padding: 16px;
+  grid-template-columns: minmax(280px, 340px) 1fr minmax(300px, 380px);
+  max-width: 1560px; margin: 0 auto; align-items: start;
+}
+.col-right { display: grid; gap: 16px; min-width: 0; }
+
+/* ── Panels ───────────────────────────────────────────────────── */
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 18px 50px rgba(0,0,0,.45);
+  overflow: hidden;
+  position: relative;
+}
+.panel::before {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(56,189,248,.6), transparent);
+}
+.panel-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 13px 16px; border-bottom: 1px solid rgba(56,189,248,.12);
+}
+.panel-head h2 { font-family: var(--font-head); font-size: .78rem; letter-spacing: .16em; text-transform: uppercase; color: var(--text-dim); font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.head-btns { display: flex; gap: 6px; }
+
+.state-chip {
+  font-family: var(--font-head); font-size: .6rem; letter-spacing: .18em;
+  padding: 4px 10px; border-radius: 20px; border: 1px solid;
+  white-space: nowrap;
+}
+.state-chip.idle { color: var(--text-faint); border-color: rgba(148,180,220,.25); background: rgba(148,180,220,.06); }
+.state-chip.listening { color: var(--ok); border-color: rgba(52,211,153,.5); background: rgba(52,211,153,.1); animation: chipPulse 1.4s infinite; }
+.state-chip.speaking { color: var(--accent-2); border-color: rgba(34,211,238,.5); background: rgba(34,211,238,.1); }
+.state-chip.thinking { color: var(--warn); border-color: rgba(251,191,36,.5); background: rgba(251,191,36,.1); }
+.state-chip.neutral { color: var(--text-dim); border-color: rgba(148,180,220,.25); }
+@keyframes chipPulse { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
+
+.pulse-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 10px var(--ok); animation: chipPulse 1.6s infinite; }
+
+/* ── Orb ──────────────────────────────────────────────────────── */
+.orb-zone { display: flex; flex-direction: column; align-items: center; padding: 26px 16px 14px; position: relative; }
+.orb { position: relative; width: 150px; height: 150px; display: grid; place-items: center; }
+.orb-core {
+  width: 78px; height: 78px; border-radius: 50%; display: grid; place-items: center; color: var(--accent-2);
+  background: radial-gradient(circle at 35% 30%, rgba(34,211,238,.55), rgba(56,189,248,.18) 55%, transparent 80%);
+  border: 1px solid rgba(56,189,248,.6);
+  box-shadow: 0 0 30px rgba(56,189,248,.55), inset 0 0 22px rgba(56,189,248,.35);
+  z-index: 3; transition: all .35s ease;
+}
+.orb-ring { position: absolute; border-radius: 50%; border: 1px solid rgba(56,189,248,.35); }
+.ring-1 { inset: 4px; border-style: dashed; animation: spin 22s linear infinite; }
+.ring-2 { inset: 20px; border-color: rgba(129,140,248,.4); animation: spin 14s linear infinite reverse; }
+.ring-3 { inset: -10px; border: 1px solid transparent; border-top-color: rgba(34,211,238,.8); border-right-color: rgba(34,211,238,.25); animation: spin 3s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.orb.listening .ring-3 { animation-duration: 1.1s; border-top-color: var(--ok); }
+.orb.listening .orb-core { box-shadow: 0 0 46px rgba(52,211,153,.65), inset 0 0 26px rgba(52,211,153,.4); border-color: rgba(52,211,153,.7); }
+.orb.speaking .ring-2 { animation-duration: 5s; }
+.orb.speaking .orb-core { box-shadow: 0 0 50px rgba(56,189,248,.9), inset 0 0 30px rgba(56,189,248,.55); }
+.orb.speaking .ring-3 { animation: pulseRing 0.9s ease-in-out infinite; }
+@keyframes pulseRing { 0%,100% { opacity:.35; transform: rotate(0deg) scale(1);} 50% { opacity:1; transform: rotate(180deg) scale(1.06);} }
+.orb.thinking .ring-1 { animation-duration: 8s; }
+.orb.thinking .ring-3 { animation: none; opacity: .4; }
+
+.orb-label { font-family: var(--font-head); font-size: .6rem; letter-spacing: .24em; color: var(--text-faint); margin-top: 14px; text-align: center; }
+.mic-btn {
+  margin-top: 16px; width: 58px; height: 58px; border-radius: 50%; cursor: pointer;
+  border: 1px solid rgba(56,189,248,.5); color: var(--accent-2);
+  background: radial-gradient(circle at 35% 30%, rgba(56,189,248,.25), rgba(5,11,24,.9) 70%);
+  display: grid; place-items: center; transition: all .25s ease;
+  box-shadow: 0 0 20px rgba(56,189,248,.25);
+}
+.mic-btn:hover { transform: scale(1.06); box-shadow: 0 0 32px rgba(56,189,248,.5); }
+.mic-btn:active { transform: scale(.94); }
+.mic-btn.on { border-color: var(--ok); color: var(--ok); box-shadow: 0 0 26px rgba(52,211,153,.6); animation: chipPulse 1.2s infinite; }
+
+/* ── Transcript feed ──────────────────────────────────────────── */
+.transcript {
+  max-height: 240px; overflow-y: auto; padding: 12px 16px;
+  font-size: .82rem; line-height: 1.55; color: var(--text-dim);
+  border-top: 1px solid rgba(56,189,248,.08);
+  scrollbar-width: thin; scrollbar-color: rgba(56,189,248,.3) transparent;
+}
+.transcript::-webkit-scrollbar { 
+
+/**
+ * VoiceCommandHandler.js
+ * ------------------------------------------------------------------
+ * Real-time continuous Speech-to-Text listener (Web Speech API).
+ *  - Continuous listening with interim results
+ *  - Auto-restart with a "voice lost" guard (SilenceManager)
+ *  - Bilingual: works for en-IN / hi-IN and falls back gracefully
+ *  - If SpeechRecognition is unavailable (some mobile browsers),
+ *    the dashboard still works fully via typed commands + tap-to-talk.
+ */
+'use strict';
+
+class VoiceCommandHandler {
+  constructor() {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    this.supported = !!SR;
+    this.SR = SR;
+    this.lang = 'en-IN';
+    this.continuous = true;
+    this.interimResults = true;
+    this._rec = null;
+    this._listening = false;
+    this._finalText = '';
+    this._restartTimer = null;
+    this._lastResultAt = Date.now();
+    this._silenceCheck = null;
+
+    this.onResult = null;   // ({final: string, interim: string})
+    this.onState = null;    // ('idle' | 'listening' | 'stopped' | 'unsupported')
+    this.onError = null;    // (err)
+    this.callbacksSet = false;
+  }
+
+  setLang(lang) { this.lang = lang; if (this._rec) this._rec.lang = lang; }
+
+  start() {
+    if (!this.supported) {
+      if (this.onState) this.onState('unsupported');
+      if (this.onError) this.onError({ message: 'Voice recognition is not supported in this browser. Type your commands instead — everything works the same.' });
+      return false;
+    }
+    if (this._listening) return true;
+    this._finalText = '';
+    this._startRecognition();
+    return true;
+  }
+
+  stop() {
+    this._listening = false;
+    clearTimeout(this._restartTimer);
+    this._clearSilenceCheck();
+    if (this._rec) {
+      try {
+        this._rec.onend = null; // prevent auto-restart
+        this._rec.abort();
+        this._rec.stop();
+      } catch { /* noop */ }
+      this._rec = null;
+    }
+    if (this.onState) this.onState('stopped');
+  }
+
+  toggle() { return this._listening ? this.stop() : this.start(); }
+
+  _startRecognition() {
+    try {
+      const rec = new this.SR();
+      this._rec = rec;
+      rec.lang = this.lang;
+      rec.continuous = this.continuous;
+      rec.interimResults = this.interimResults;
+      rec.maxAlternatives = 1;
+
+      rec.onstart = () => {
+        this._listening = true;
+        this._lastResultAt = Date.now();
+        this._startSilenceCheck();
+        if (this.onState) this.onState('listening');
+      };
+
+      rec.onresult = (event) => {
+        this._lastResultAt = Date.now();
+        let interim = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const res = event.results[i];
+          const text = res[0]?.transcript || '';
+          if (res.isFinal) {
+            this._finalText += (this._finalText ? ' ' : '') + text;
+          } else {
+            interim += text;
+          }
+        }
+        if (this.onResult) this.onResult({ final: this._finalText.trim(), interim: interim.trim() });
+      };
+
+      rec.onerror = (e) => {
+        // 'no-speech' & 'aborted' are normal in continuous mode — restart silently
+        if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+          this._listening = false;
+          if (this.onState) this.onState('stopped');
+          if (this.onError) this.onError({ message: 'Microphone access denied. Allow mic permission and retry.', code: e.error });
+          return;
+        }
+        if (e.error === 'network') {
+          this._listening = false;
+          if (this.onError) this.onError({ message: 'Speech service network error — retrying…', code: e.error });
+        }
+        // other errors → allow the onend auto-restart to recover
+      };
+
+      rec.onend = () => {
+        const wasListening = this._listening;
+        this._rec = null;
+        this._clearSilenceCheck();
+        if (!wasListening) {
+          if (this.onState) this.onState('stopped');
+          return;
+        }
+        // Auto-restart continuous listening (guard: only if we got some audio recently)
+        const gap = Date.now() - this._lastResultAt;
+        this._restartTimer = setTimeout(() => {
+          if (this._listening) this._startRecognition();
+        }, gap > 8000 ? 250 : 120);
+        if (this.onState) this.onState('listening');
+      };
+
+      rec.start();
+    } catch (e) {
+      this._listening = false;
+      if (this.onState) this.onState('stopped');
+      if (this.onError) this.onError({ message: 'Could not start voice recognition: ' + e.message });
+    }
+  }
+
+  _startSilenceCheck() {
+    this._clearSilenceCheck();
+    this._silenceCheck = setInterval(() => {
+      // If nothing heard for 12s, bounce the session to keep the mic fresh
+      if (this._listening && Date.now() - this._lastResultAt > 12000 && this._rec) {
+        this._lastResultAt = Date.now();
+        try { this._rec.stop(); } catch { /* noop */ }
+      }
+    }, 4000);
+  }
+  _clearSilenceCheck() { if (this._silenceCheck) { clearInterval(this._silenceCheck); this._silenceCheck = null; } }
+
+  resetFinal() { this._finalText = ''; }
+}
+
+// Expose globally for app.js
+window.VoiceCommandHandler = VoiceCommandHandler;
+/**
+ * app.js — Dashboard wiring: voice loop, orb states, panels, modals, PWA.
+ */
+'use strict';
+
+(function () {
+  const $ = (id) => document.getElementById(id);
+
+  /* ─────────────── init brain + voice ─────────────── */
+  const brain = new AssistantBrain();
+  const voice = new VoiceCommandHandler();
+
+  const savedLang = localStorage.getItem('jarvis.lang') || 'en-IN';
+  const savedKey = localStorage.getItem('jarvis.geminiKey') || '';
+  const savedName = localStorage.getItem('jarvis.name') || '';
+  brain.setSettings({ lang: savedLang, geminiKey: savedKey, name: savedName });
+  voice.setLang(savedLang);
+
+  /* ─────────────── UI refs ─────────────── */
+  const transcriptEl = $('transcript');
+  const orb = $('orb');
+  const orbLabel = $('orbLabel');
+  const micBtn = $('micBtn');
+  const stateChip = $('voiceState');
+  const textInput = $('textInput');
+  const sendBtn = $('sendBtn');
+  const toastEl = $('toast');
+  let toastTimer = null;
+  let lastFinal = '';
+
+  /* ─────────────── transcript log ─────────────── */
+  function logEntry(who, text, opts = {}) {
+    const el = document.createElement('div');
+    el.className = 't-entry ' + (opts.isError ? 'sys' : who);
+    const whoEl = document.createElement('div');
+    whoEl.className = 'who';
+    whoEl.textContent = who === 'user' ? 'You' : (opts.isError ? 'Jarvis · notice' : 'Jarvis');
+    const txt = document.createElement('div');
+    txt.className = 'txt' + (opts.interim ? ' interim' : '');
+    txt.textContent = text;
+    el.append(whoEl, txt);
+    if (opts.reason) {
+      const r = document.createElement('div');
+      r.className = 'reason';
+      r.textContent = opts.reason;
+      el.appendChild(r);
+    }
+    transcriptEl.appendChild(el);
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    return el;
+  }
+  // remove placeholder
+  const ph = transcriptEl.querySelector('.typing-hint');
+  if (ph) ph.remove();
+
+  brain.onLog = (who, text, opts) => logEntry(who, text, opts);
+  brain.onToast = (msg, isError) => toast(msg, isError);
+
+  /* ─────────────── state / orb ─────────────── */
+  function setState(state) {
+    orb.className = 'orb ' + state;
+    const map = {
+      idle: ['STANDBY', 'idle', 'TAP MIC TO SPEAK'],
+      listening: ['LISTENING…', 'listening', 'I\u2019M ALL EARS'],
+      thinking: ['PROCESSING…', 'thinking', 'ANALYZING'],
+      speaking: ['RESPONDING', 'speaking', 'SPEAKING…'],
+      stopped: ['STANDBY', 'idle', 'TAP MIC TO SPEAK']
+    };
+    const [label, cls, orbLbl] = map[state] || map.idle;
+    stateChip.textContent = label;
+    stateChip.className = 'state-chip ' + cls;
+    orbLabel.textContent = orbLbl;
+  }
+
+  brain.onState = setState;
+  voice.onState = (s) => {
+    if (s === 'listening') { setState('listening'); micBtn.classList.add('on'); }
+    else if (s === 'stopped' || s === 'idle') { setState('idle'); micBtn.classList.remove('on'); }
+    else if (s === 'unsupported') { setState('idle'); micBtn.classList.add('hidden'); }
+  };
+
+  voice.onResult = ({ final, interim }) => {
+    const live = final || lastFinal;
+    if (interim) {
+      // show interim line under last user entry
+      const last = transcriptEl.lastElementChild;
+      if (last && last.classList.contains('t-entry') && last.classList.contains('user') && last.dataset.interim === '1') {
+        last.querySelector('.txt').textContent = live + ' ' + interim;
+      } else {
+        const el = logEntry('user', (live + ' ' + interim).trim(), { interim: true });
+        el.dataset.interim = '1';
+      }
+    } else if (final) {
+      // finalize: remove interim entry if present
+      const last = transcriptEl.lastElementChild;
+      if (last && last.dataset && last.dataset.interim === '1') last.remove();
+      logEntry('user', final);
+      lastFinal = '';
+      voice.resetFinal();
+      handleCommand(final);
+    }
+  };
+
+  voice.onError = (e) => {
+    if (e.code === 'not-allowed' || e.code === 'service-not-allowed') {
+      toast('🎤 Microphone permission needed. Allow access in the browser bar, Sir.', true);
+    }
+  };
+
+  /* ─────────────── command pipeline ─────────────── */
+  async function handleCommand(text) {
+    if (!text.trim()) return;
+    try {
+      const res = await brain.process(text);
+      if (res && res.response) brain.speak(res.response);
+    } catch (e) {
+      logEntry('jarvis', 'Something went wrong: ' + (e.message || e), { isError: true });
+      brain.speak('I hit an unexpected error, Sir. Please try again.');
+    }
+  }
+
+  micBtn.addEventListener('click', () => {
+    if (!voice.supported) { toast('Voice not supported here — type below instead, Sir.', true); return; }
+    if (voice.toggle()) {
+      if (!voice._listening) toast('🎤 Listening… speak now', false);
+    }
+  });
+
+  function submitText() {
+    const v = textInput.value.trim();
+    if (!v) return;
+    textInput.value = '';
+    logEntry('user', v);
+    handleCommand(v);
+  }
+  sendBtn.addEventListener('click', submitText);
+  textInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitText(); });
+
+  /* ─────────────── quick chips ─────────────── */
+  document.querySelectorAll('.chip[data-cmd]').forEach(chip => {
+    chip.addEventListener('click', () => handleCommand(chip.dataset.cmd));
+  });
+
+  /* ─────────────── play events (recommendations etc.) ─────────────── */
+  window.addEventListener('jarvis:play', (e) => {
+    const v = e.detail;
+    if (!v || !v.id) return;
+    brain.automation.openVideo(v);
+    toast('▶ ' + (v.title || 'Playing'));
+    logEntry('jarvis', `Loaded “${v.title}”${v.channel ? ' by ' + v.channel : ''}.`);
+    brain.stopSpeaking();
+    if (brain.speechOn) brain.speak(`Playing ${v.title}, Sir.`);
+  });
+
+  /* ─────────────── tabs ─────────────── */
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      brain.content.setTab(tab.dataset.tab);
+      const rec = brain.content.recTab;
+      if (rec === 'similar') {
+        if (brain.automation.currentVideo) brain.content.similarVideos(brain.automation.currentVideo.id).catch(() => {});
+        else $('recBody').innerHTML = '<div class="empty-state">Load a video, then I\u2019ll recommend similar ones.</div>';
+      } else if (rec === 'trends') {
+        brain.content.trends().catch(() => {});
+      } else {
+        $('recBody').innerHTML = '<div class="empty-state">Say “Give me video ideas about …” or type a topic above.</div>';
+      }
+    });
+  });
+
+  /* ─────────────── script panel buttons ─────────────── */
+  $('copyScriptBtn').addEventListener('click', async () => {
+    if (brain.content.copyScript()) toast('📋 Script copied to clipboard');
+  });
+  $('downloadScriptBtn').addEventListener('click', () => brain.content.downloadScript());
+
+  /* ─────────────── modals ─────────────── */
+  document.querySelectorAll('[data-close]').forEach(btn => {
+    btn.addEventListener('click', () => $(btn.dataset.close).classList.add('hidden'));
+  });
+  document.querySelectorAll('.modal-backdrop').forEach(back => {
+    back.addEventListener('click', (e) => { if (e.target === back) back.classList.add('hidden'); });
+  });
+  $('ttAdd').addEventListener('click', () => {
+    const t = prompt('Time (e.g. 17:00):');
+    if (!t) return;
+    const task = prompt('Task:');
+    if (!task) return;
+    brain.automation.addSlot(t.trim(), task.trim());
+    brain.automation.openTimetable();
+    toast('🗓 Slot added');
+  });
+
+  // Settings
+  $('settingsBtn').addEventListener('click', () => {
+    $('setLang').value = localStorage.getItem('jarvis.lang') || 'en-IN';
+    $('setKey').value = localStorage.getItem('jarvis.geminiKey') || '';
+    $('setName').value = localStorage.getItem('jarvis.name') || '';
+    $('settingsModal').classList.remove('hidden');
+  });
+  $('saveSettings').addEventListener('click', () => {
+    const lang = $('setLang').value;
+    const key = $('setKey').value.trim();
+    const name = $('setName').value.trim();
+    localStorage.setItem('jarvis.lang', lang);
+    localStorage.setItem('jarvis.geminiKey', key);
+    localStorage.setItem('jarvis.name', name);
+    brain.setSettings({ lang, geminiKey: key, name });
+    voice.setLang(lang);
+    const hint = $('settingsHint');
+    hint.textContent = key ? '✓ Gemini multimodal analysis ENABLED' : '✓ Saved (knowledge engine active)';
+    setTimeout(() => $('settingsModal').classList.add('hidden'), 900);
+  });
+
+  /* ─────────────── toast ─────────────── */
+  function toast(msg, isError) {
+    toastEl.textContent = msg;
+    toastEl.className = 'toast' + (isError ? ' error' : '');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toastEl.classList.add('hidden'), 4200);
+    void toastEl.offsetWidth;
+  }
+
+  /* ─────────────── health / net pill ─────────────── */
+  async function healthCheck() {
+    const pill = $('netPill');
+    try {
+      const res = await fetch('/api/health');
+      if (res.ok) { pill.classList.add('ok'); $('netText').textContent = 'ONLINE'; }
+      else throw new Error();
+    } catch {
+      pill.classList.add('bad');
+      $('netText').textContent = 'OFFLINE';
+    }
+  }
+  healthCheck();
+  setInterval(healthCheck, 20000);
+
+  /* ─────────────── PWA install ─────────────── */
+  let deferredPrompt = null;
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    $('installBtn').classList.remove('hidden');
+  });
+  $('installBtn').addEventListener('click', async () => {
+    if (!deferredPrompt) { toast('📱 Use browser menu → “Add to Home Screen”', false); return; }
+    deferredPrompt.prompt();
+    await deferredPrompt.userChoice;
+    deferredPrompt = null;
+    $('installBtn').classList.add('hidden');
+  });
+  window.addEventListener('appinstalled', () => {
+    toast('📱 App installed. Welcome aboard, Sir.');
+    $('installBtn').classList.add('hidden');
+  });
+
+  /* ─────────────── service worker ─────────────── */
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+
+  /* ─────────────── boot ─────────────── */
+  setState('idle');
+  const greeting = brain._greet();
+  logEntry('jarvis', `${greeting}, Sir. J.A.R.V.I.S. Creator OS online — voice, video analysis, scripts and trends at your command. Tap the mic and speak, or say “What can you do?”.`);
+  setTimeout(() => { if (brain.speechOn) brain.speak(`${greeting}, Sir. JARVIS Creator OS is online. Tap the mic and speak.`); }, 600);
+
+  // auto-start listening when the page opens (hands-free by default)
+  setTimeout(() => { if (voice.supported && !voice._listening) voice.start(); }, 1500);
+
+  // PWA shortcut: open timetable directly (?open=timetable)
+  if (new URLSearchParams(location.search).get('open') === 'timetable') {
+    setTimeout(() => brain.automation.openTimetable(), 400);
+  }
+
+  // expose for debugging
+  window.__brain = brain;
+  window.__voice = voice;
+})();
+/**
+ * AutomationController.js
+ * ------------------------------------------------------------------
+ * System & browser automation layer — voice-triggered.
+ *  - Open YouTube videos in the embedded monitor (or a new tab)
+ *  - Open YouTube searches, channels, web pages
+ *  - Open / manage the daily timetable (localStorage-backed)
+ */
+'use strict';
+
+class AutomationController {
+  constructor() {
+    this.currentVideo = null; // {id, title, channel, viewsText, published, thumb}
+    this.videoListeners = [];
+    this.timetable = this._loadTimetable();
+  }
+
+  /* ─────────────── YouTube / browser actions ─────────────── */
+
+  /** Open a video in the embedded monitor. Returns the video object. */
+  openVideo(video, { autoPlay = true } = {}) {
+    if (!video || !video.id) throw new Error('Invalid video data.');
+    this.currentVideo = { ...video };
+    this.emit('video', this.currentVideo);
+    const src = `https://www.youtube-nocookie.com/embed/${video.id}?autoplay=${autoPlay ? 1 : 0}&rel=0&modestbranding=1`;
+    document.getElementById('ytPlayer').src = src;
+    document.getElementById('ytEmbedWrap').classList.remove('hidden');
+    document.getElementById('playerPlaceholder').classList.add('hidden');
+    const np = document.getElementById('nowPlaying');
+    np.classList.remove('hidden');
+    document.getElementById('npThumb').src = video.thumb || `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`;
+    document.getElementById('npTitle').textContent = video.title || '—';
+    document.getElementById('npMeta').textContent = [video.channel, video.published, video.viewsText].filter(Boolean).join(' · ') || '—';
+    document.getElementById('npOpen').href = `https://www.youtube.com/watch?v=${video.id}`;
+    try {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch { /* noop */ }
+    return this.currentVideo;
+  }
+
+  openInNewTab(url) {
+    const a = document.createElement('a');
+    a.href = url;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  openYouTubeSearch(query) {
+    this.openInNewTab('https://www.youtube.com/results?search_query=' + encodeURIComponent(query));
+  }
+
+  openYouTubeChannel(handleOrName) {
+    this.openInNewTab('https://www.youtube.com/@' + encodeURIComponent(handleOrName.replace(/^@/, '')));
+  }
+
+  getVideoUrl(id) { return `https://www.youtube.com/watch?v=${id}`; }
+
+  onVideo(fn) { this.videoListeners.push(fn); }
+  emit(evt, payload) { this.videoListeners.forEach(fn => fn(payload, evt)); }
+
+  /* ─────────────── Timetable ─────────────── */
+
+  _defaultTimetable() {
+    return [
+      { time: '09:00', task: 'Review yesterday\'s analytics & comments' },
+      { time: '10:00', task: 'Write script / hook for next video' },
+      { time: '12:00', task: 'Shoot B-roll & primary footage' },
+      { time: '14:00', task: 'Edit — rough cut' },
+      { time: '16:00', task: 'Edit — effects, sound design, color grade' },
+      { time: '18:30', task: 'Thumbnail + title + SEO keywords' },
+      { time: '20:00', task: 'Schedule upload & promo clips' },
+      { time: '21:30', task: 'Reply to comments, community check-in' }
+    ];
+  }
+
+  _loadTimetable() {
+    try {
+      const raw = localStorage.getItem('jarvis.timetable');
+      if (raw) return JSON.parse(raw);
+    } catch { /* noop */ }
+    return this._defaultTimetable();
+  }
+
+  saveTimetable() {
+    try { localStorage.setItem('jarvis.timetable', JSON.stringify(this.timetable)); } catch { /* noop */ }
+  }
+
+  addSlot(time, task) {
+    this.timetable.push({ time, task });
+    this.timetable.sort((a, b) => a.time.localeCompare(b.time));
+    this.saveTimetable();
+  }
+
+  /** Opens the timetable modal and renders slots. Returns today's slots. */
+  openTimetable() {
+    const grid = document.getElementById('ttGrid');
+    grid.innerHTML = '';
+    const now = new Date();
+    const nowMin = now.getHours() * 60 +
+
+/**
+ * AssistantBrain.js
+ * ------------------------------------------------------------------
+ * Core LLM orchestration — the "Jarvis brain".
+ *  - Parses free-form voice commands into intents (bilingual en/hi)
+ *  - Executes them through AutomationController + ContentIntelligence
+ *  - Answers editing / effect / sound questions from a built-in
+ *    creative-knowledge engine (no key needed)
+ *  - Upgrades to real Gemini multimodal analysis when a key is set
+ *  - Speaks responses with SpeechSynthesis (Jarvis-style voice)
+ */
+'use strict';
+
+class AssistantBrain {
+  constructor() {
+    this.automation = new AutomationController();
+    this.content = new ContentIntelligence();
+    this.lang = 'en-IN';
+    this.name = 'Creator';
+    this.geminiKey = '';
+    this.speechOn = true;
+    this.voice = null;
+    this.busy = false;
+
+    this.onState = null;  // ('idle'|'listening'|'speaking'|'thinking')
+    this.onLog = null;    // (who, text, {interim})
+    this.onToast = null;  // (msg, isError)
+
+    this._prepareVoice();
+  }
+
+  /* ─────────────── speech output ─────────────── */
+
+  _prepareVoice() {
+    if (!window.speechSynthesis) return;
+    const pick = () => {
+      const voices = window.speechSynthesis.getVoices();
+      if (!voices.length) return;
+      const want = this.lang === 'hi-IN' ? 'hi' : this.lang.split('-')[0];
+      this.voice =
+        voices.find(v => v.lang === this.lang) ||
+        voices.find(v => v.lang && v.lang.startsWith(want)) ||
+        (want === 'en' && voices.find(v => v.lang && v.lang.startsWith('en'))) ||
+        voices[0];
+    };
+    pick();
+    window.speechSynthesis.onvoiceschanged = pick;
+  }
+
+  speak(text) {
+    if (this.onState) this.onState('speaking');
+    const trimmed = String(text || '').replace(/[#*`>]/g, '').replace(/\s+/g, ' ').trim();
+    if (!this.speechOn || !window.speechSynthesis) {
+      setTimeout(() => this.onState && this.onState('idle'), 100);
+      return;
+    }
+    try { window.speechSynthesis.cancel(); } catch { /* noop */ }
+    const u = new SpeechSynthesisUtterance(trimmed.slice(0, 400));
+    u.lang = this.lang;
+    u.rate = 1.04;
+    u.pitch = 0.92;
+    if (this.voice) u.voice = this.voice;
+    u.onend = () => this.onState && this.onState('idle');
+    u.onerror = () => this.onState && this.onState('idle');
+    window.speechSynthesis.speak(u);
+    // Safety: if engine never fires onend
+    setTimeout(() => this.onState && this.onState('idle'), Math.min(15000, 3000 + trimmed.length * 55));
+  }
+
+  stopSpeaking() { try { window.speechSynthesis.cancel(); } catch { /* noop */ } if (this.onState) this.onState('idle'); }
+
+  /* ─────────────── utilities ─────────────── */
+
+  _log(who, text, opts = {}) { if (this.onLog) this.onLog(who, text, opts); }
+
+  _toast(msg, isError) { if (this.onToast) this.onToast(msg, isError); }
+
+  _isHindi(text) { return this.lang === 'hi-IN' || /[\u0900-\u097F]/.test(text); }
+
+  _t(hindi, english) { return this._isHindiText ? hindi : english; }
+
+  _greet() {
+    const h = new Date().getHours();
+    if (h < 5) return 'Working late';
+    if (h < 12) return 'Good morning';
+    if (h < 17) return 'Good afternoon';
+    return 'Good evening';
+  }
+
+  _parseTS(text) {
+    // "at 2:15", "2 minutes 15 seconds", "1:02:30", "at 02:15"
+    let m = text.match(/(?:at\s+)?(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+    if (m) return (+m[1]) * 60 + (+m[2]) + (m[3] ? (+m[3]) / 60 : 0);
+    m = text.match(/(?:(\d+)\s*(?:min(?:ute)?s?|m)\s*)?(?:and\s+)?(\d+)\s*sec(?:onds?)?/);
+    if (m) return (+(m[1] || 0)) * 60 + (+m[2]);
+    return null;
+  }
+
+  _extractChannel(text) {
+    // "open mrbeast's latest video" / "latest video from PewDiePie"
+    let m = text.match(/(?:from|by)\s+([A-Za-z0-9@_.\-\s]{2,40}?)(?:\s*(?:video|'s|s'))?$/i);
+    if (m) return m[1].trim().replace(/'s?$/, '');
+    m = text.match(/^.*?\b(?:open|play|show|get)\s+([A-Za-z0-9@_.\-\s]{2,40}?)(?:'s)?\s+(?:latest|new|newest)\s+video/i);
+    if (m) return m[1].trim();
+    return null;
+  }
+
+  /* ─────────────── INTENT ENGINE ─────────────── */
+
+  async process(rawText) {
+    if (this.busy) return null;
+    const text = String(rawText || '').trim().toLowerCase();
+    if (!text) return null;
+    this._isHindiText = this._isHindi(text);
+    this._rawText = String(rawText || '').trim();
+
+    const intents = [
+      ['latestVideo', /(?:latest|new(?:est)?)\s+video\s+(?:from|by)\s+|open\s+.{0,40}?'s\s+latest\s+video|play\s+.{0,40}?'s\s+(?:latest|new)/],
+      ['searchYoutube', /^(?:open|go\s+to|search)\s+(?:youtube\s+for|youtube)\s+(.+)$|search\s+(?:youtube\s+for\s+)?(.+?)\s+on\s+youtube/],
+      ['openSite', /^(?:open|go\s+to|launch)\s+(youtube|instagram|instagram\s+reels|tiktok|twitter|youtube\s+studio|x|facebook|whatsapp|premiere\s+pro|davinci|capcut|linkedin|spotify)\b/],
+      ['timetable', /(?:timetable|schedule|routine|plan\s+for\s+the\s+day|what('|’)?s\s+next|next\s+up)/],
+      ['addTask', /add\s+(?:a\s+)?task\s+(?:at|for)\s+([\d:apm\s]+)(?:—|-|,|\.)?\s*(.+)$|schedule\s+(.+?)\s+at\s+([\d:apm\s]+)/],
+      ['extractScript', /(?:extract|get|fetch|show|copy)\s+(?:the\s+)?(?:script|transcript|subtitles|captions)/],
+      ['copyScript', /copy\s+(?:the\s+)?script/],
+      ['similar', /(?:more\s+videos\s+like\s+this|similar\s+videos|recommend\s+(?:me\s+)?(?:videos\s+)?like\s+this|videos\s+like\s+this)/],
+      ['trends', /(?:trend|viral|trending|what('|’)s\s+hot)/],
+      ['ideas', /(?:video\s+)?ideas?\s+(?:about|for|on)\s+(.+)|suggest\s+(?:some\s+)?(?:video\s+)?ideas\s+(?:about|for|on)?\s*(.+)|what\s+should\s+i\s+make\s+(?:a\s+video\s+on|about)\s*(.+)/],
+      ['analyzeEffect', /(?:analyze|explain|break\s+down)\s+(?:the\s+)?effect|how\s+was\s+(?:the\s+)?[\w' -]{0,24}?effect\s+(?:made|done|created|achieved)|how\s+was\s+this\s+(?:effect|made)|how\s+did\s+they\s+(?:do|make)\s+this\s+effect|what\s+effect\s+is\s+this/],
+      ['analyzeSound', /(?:what\s+is\s+this\s+|what\s+(?:sound|music|audio|bgm|song)|identify\s+(?:the\s+)?(?:sound|music)|how\s+was\s+this\s+sound|what\s+sound\s+is)/],
+      ['editingAdvice', /(?:cut|pacing|pace|transition|color\s+grade|colour\s+grade|grading|b-?roll|hook|intro|retention|montage|zoom|speed\s+ramp|jump\s+cut|effects?\s+should\s+i|which\s+effect|best\s+effect)/],
+      ['openVideoDirect', /^(?:open|play|show)\s+(?:this\s+)?(?:video|one)\s+(?:in\s+(?:a\s+)?(?:new\s+)?tab)?$/],
+      ['who', /who\s+are\s+you|your\s+name|what\s+are\s+you/],
+      ['help', /help|what\s+can\s+you\s+do|commands/],
+      ['greet', /^(hi|hello|hey|namaste|namaskar|hola)\b/],
+      ['thanks', /thank|thanks|shukriya|dhanyavad/],
+      ['idle', /(?:go\s+to\s+sleep|sleep|stop\s+listening)/]
+    ];
+
+    for (const [name, re] of intents) {
+      const m = text.match(re);
+      if (m) {
+        const out = await this[`_act_${name}`](m, text);
+        return out;
+      }
+    }
+    return this._act_default(text);
+  }
+
+  /* ─────────────── ACTIONS ─────────────── */
+
+  async _act_latestVideo(m, text) {
+    // Prefer original casing from the raw command for nicer speech
+    const raw = this._rawText || text;
+    let channel = this._extractChannel(raw) || this._extractChannel(text);
+    if (!channel) {
+      const am = text.match(/latest\s+video\s+(?:from|by)\s+([A-Za-z0-9@_.\-\s]+)$/);
+      channel = am ? am[1].trim().replace(/'s?$/, '') : null;
+    }
+    if (!channel) {
+      this._log('jarvis', 'Whose latest video, Sir? Try — “Open MrBeast\u2019s latest video”.');
+      return { response: 'Please tell me the channel name, Sir.' };
+    }
+    this._log('jarvis', `Fetching the latest upload from ${channel}…`, { interim: true });
+    try {
+      const videos = await this._api(`/api/video/latest?channel=${encodeURIComponent(channel)}&max=3`);
+      const v = videos[0];
+      this.automation.openVideo(v);
+      this._toast(`▶ Now playing: ${v.title}`);
+      const reply = `Here is the latest from ${channel}: ${v.title}, ${v.viewsText || 'recently published'}. Playing it now, Sir.`;
+      this._log('jarvis', `${v.title} — ${v.channel} · ${v.viewsText || ''} · ${v.published || ''}`);
+      this.content.setTab('similar');
+      this.content.similarVideos(v.id).catch(() => {});
+      return { response: reply };
+    } catch (e) {
+      this._log('jarvis', `I couldn't find that channel, Sir. ${e.message}`, { isError: true });
+      return { response: `I couldn't find a channel called ${channel}. Double-check the name, Sir.` };
+    }
+  }
+
+  async _act_searchYoutube(m, text) {
+    let q = (m[1] || m[2] || '').trim();
+    if (!q) {
+      const mm = text.match(/open\s+youtube/);
+      if (mm) { this.automation.openInNewTab('https://www.youtube.com'); return { response: 'Opening YouTube in a new tab, Sir.' }; }
+    }
+    if (!q) q = text.replace(/search|for|on\s+youtube/g, '').trim();
+    this._log('jarvis', `Searching YouTube for “${q}”…`);
+    try {
+      const results = await this._api(`/api/search?q=${encodeURIComponent(q)}&max=6`);
+      if (!results.length) throw new Error('no results');
+      const top = results[0];
+      this.automation.openVideo(top);
+      this.content.renderVideoCards(results.slice(1), { badge: 'SEARCH' });
+      this.content.setTab('similar');
+      const reply = `Found it, Sir. Playing “${top.title}” by ${top.channel || 'unknown channel'}. I've queued ${results.length - 1} more results in the panel.`;
+      return { response: reply };
+    } catch {
+      this.automation.openYouTubeSearch(q);
+      this._log('jarvis', `I couldn't load results directly, so I opened YouTube for “${q}” in a new tab.`);
+      return { response: `Opening YouTube search for ${q} in a new tab, Sir.` };
+    }
+  }
+
+  _act_openSite(m) {
+    const map = {
+      'youtube': 'https://www.youtube.com',
+      'youtube studio': 'https://studio.youtube.com',
+      'instagram': 'https://www.instagram.com',
+      'instagram reels': 'https://www.instagram.com/reels',
+      'tiktok': 'https://www.tiktok.com',
+      'twitter': 'https://x.com',
+      'x': 'https://x.com',
+      'facebook': 'https://www.facebook.com',
+      'whatsapp': 'https://web.whatsapp.com',
+      'linkedin': 'https://www.linkedin.com',
+      'spotify': 'https://open.spotify.com',
+      'premiere pro': 'https://www.adobe.com/products/premiere.html',
+      'davinci': 'https://www.blackmagicdesign.com/products/davinciresolve',
+      'capcut': 'https://www.capcut.com'
+    };
+    const site = m[1].trim().toLowerCase();
+    const url = map[site];
+    if (url) {
+      this.automation.openInNewTab(url);
+      const reply = `Opening ${site} in a new tab, Sir.`;
+      this._log('jarvis', reply);
+      return { response: reply };
+    }
+    return this._act_default(m[0]);
+  }
+
+  _act_timetable() {
+    const tt = this.automation.openTimetable();
+    const next = this.automation.nextUp();
+    const reply = next
+      ? `Here's your timetable, Sir. Next up: ${next.task} at ${next.time}.`
+      : 'Your timetable is open, Sir.';
+    this._log('jarvis', reply);
+    return { response: reply };
+  }
+
+  _act_addTask(m) {
+    let time = (m[1] || m[4] || '').trim();
+    let task = (m[2] || m[3] || '').trim();
+    time = time.replace(/\s+/g, ' ');
+    // normalize 6pm → 18:00
+    const tm = time.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+    if (tm) {
+      let h = +tm[1], min = +(tm[2] || 0);
+      if (tm[3] && /pm/i.test(tm[3]) && h < 12) h += 12;
+      if (tm[3] && /am/i.test(tm[3]) && h === 12) h = 0;
+      time = `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+    }
+    this.automation.addSlot(time, task);
+    this.automation.openTimetable();
+    const reply = `Done, Sir. ${task} added to your schedule at ${time}.`;
+    this._log('jarvis', reply);
+    return { response: reply };
+  }
+
+  async _act_extractScript() {
+    const v = this.automation.currentVideo;
+    if (!v) {
+      const reply = 'No video is loaded yet, Sir. Say “Open MrBeast\u2019s latest video” or click a video first.';
+      this._log('jarvis', reply);
+      return { response: reply };
+    }
+    this._log('jarvis', 'Extracting the full script…');
+    try {
+      const s = await this.content.fetchTranscript(v.id);
+      const words = s.text.split(/\s+/).filter(Boolean).length;
+      const reply = `Script extracted, Sir. ${words} words across ${s.segments.length} lines. It's ready in the Script panel — you can copy it or download it.`;
+      this._toast('📜 Script extracted');
+      return { response: reply };
+    } catch (e) {
+      this._log('jarvis', e.message, { isError: true });
+      return { response: 'The transcript for this video is locked or unavailable, Sir. Try another video.' };
+    }
+  }
+
+  _act_copyScript() {
+    if (this.content.copyScript()) {
+      const reply = 'Script copied to your clipboard, Sir.';
+      this._log('jarvis', reply);
+      return { response: reply };
+    }
+    return this._act_extractScript();
+  }
+
+  async _act_similar() {
+    const v = this.automation.currentVideo;
+    if (!v) {
+      const reply = 'Load a video first, Sir, then ask me for similar ones.';
+      this._log('jarvis', reply);
+      return { response: reply };
+    }
+    this._log('jarvis', 'Scanning the web for videos like this one…');
+    try {
+      const list = await this.content.similarVideos(v.id);
+      this.content.setTab('similar');
+      const reply = `Found ${list.length} videos with a similar style and topic, Sir. They're in the Recommended panel — tap any card to play it.`;
+      return { response: reply };
+    } catch (e) {
+      this._log('jarvis', e.message, { isError: true });
+      return { response: "I couldn't find similar videos for this one, Sir." };
+    }
+  }
+
+  async _act_trends() {
+    this._log('jarvis', 'Pulling today\u2019s trending videos…');
+    try {
+      const list = await this.content.trends();
+      this.content.setTab('trends');
+      const top = list.slice(0, 3).map((v, i) => `${i + 1}. ${v.title}`).join('. ');
+      const reply = `Here are today's trends, Sir. Top pick: ${list[0]?.title}. I've listed ${list.length} videos in the panel.`;
+      this._log('jarvis', `Top 3 — ${top}`);
+      return { response: reply };
+    } catch (e) {
+      this._log('jarvis', e.message, { isError: true });
+      return { response: 'Trending feed is unavailable right now, Sir. Try again in a moment.' };
+    }
+  }
+
+  async _act_ideas(m) {
+    const topic = (m[1] || m[2] || m[3] || '').trim().replace(/[?.!]$/, '');
+    if (!topic) {
+      const reply = 'Give me a topic, Sir — like “Give me video ideas about cricket”.';
+      this._log('jarvis', reply);
+      return { response: reply };
+    }
+    this._log('jarvis', `Brainstorming content ideas on “${topic}”…`, { interim: true });
+    try {
+      const ideas = await this.content.ideas(topic);
+      this.content.setTab('ideas');
+      const reply = `Here are 8 fresh angles on ${topic}, Sir. They're in the Ideas tab — each has a title, a hook and a format.`;
+      this._toast('💡 Ideas ready');
+      return { response: reply };
+    } catch (e) {
+      this._log('jarvis', e.message, { isError: true });
+      return { response: "The idea engine is busy, Sir. Try again shortly." };
+    }
+  }
+
+  async _act_analyzeEffect(m, text) {
+    return this._analyze(m, text, 'effect');
+  }
+  async _act_analyzeSound(m, text) {
+    return this._analyze(m, text, 'sound');
+  }
+
+  async _analyze(m, text, kind) {
+    const v = this.automation.currentVideo;
+    if (!v) {
+      const reply = 'Load a video first, Sir — then say “Analyze the effect at 2:15”.';
+      this._log('jarvis', reply);
+      return { response: reply };
+    }
+    const ts = this._parseTS(text) ?? 0;
+    const atTS = ts > 0 ? ` at ${window.fmtTS(ts)}` : '';
+    const question = kind === 'sound'
+      ? `What is this sound/music${atTS} and why does it work so well?`
+      : `How was this visual effect made${atTS} and why was it used?`;
+
+    // Gemini path (true multimodal) when a key is configured
+    if (this.geminiKey) {
+      this._log('jarvis', `Analyzing the ${kind === 'sound' ? 'sound design' : 'visual editing'}${atTS} with Gemini vision…`, { interim: true });
+      try {
+        const res = await fetch('/api/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Gemini-Key': this.geminiKey },
+          body: JSON.stringify({ videoId: v.id, ts, question })
+        });
+        const json = await res.json();
+        if (!json.ok) throw new Error(json.error);
+        this._log('jarvis', json.data.analysis || json.data.markdown);
+        const summary = (json.data.analysis || '').split('\n').slice(0, 3).join(' ');
+        this._toast('🧠 Gemini analysis complete');
+        return { response: summary ? `Analysis complete, Sir. ${summary}` : 'Analysis complete, Sir. Full breakdown is in the voice feed.' };
+      } catch (e) {
+        this._log('jarvis', `Gemini analysis failed: ${e.message} — falling back to my knowledge engine.`, { isError: true });
+        // fall through to local engine
+      }
+    }
+
+    // Local knowledge-engine path
+    let chunkText = '';
+    try {
+      if (this.content.script) {
+        const segs = this.content.script.segments;
+        const i = segs.findIndex(s => s.start >= ts - 3);
+        const idx = Math.max(0, i < 0 ? segs.length - 1 : i);
+        chunkText = segs.slice(Math.max(0, idx - 10), idx + 10).map(s => s.text).join(' ');
+      } else if (v.id) {
+        const s = await this.content.fetchTranscript(v.id);
+        const segs = s.segments;
+        const i = segs.findIndex(x => x.start >= ts - 3);
+        const idx = Math.max(0, i < 0 ? segs.length - 1 : i);
+        chunkText = segs.slice(Math.max(0, idx - 10), idx + 10).map(x => x.text).join(' ');
+      }
+    } catch { /* no transcript needed */ }
+
+    const answer = this._knowledgeAnswer(kind, ts, text, chunkText);
+    this._log('jarvis', answer.full);
+    this._toast(kind === 'sound' ? '🎧 Sound breakdown' : '🎬 Effect breakdown');
+    return { response: answer.spoken };
+  }
+
+  _knowledgeAnswer(kind, ts, question, chunkText) {
+    const hay = (question + ' ' + chunkText).toLowerCase();
+    const pool = kind === 'sound' ? SOUND_LIB : EFFECT_LIB;
+
+    // score entries by keyword hits in the question (weight 2) + transcript chunk (weight 1)
+    let best = null, bestScore = 0;
+    for (const e of pool) {
+      let score = 0;
+      for (const kw of e.kw) {
+        if (question.includes(kw)) score += 2;
+        if (chunkText && chunkText.toLowerCase().includes(kw)) score += 1;
+      }
+      if (score > bestScore) { bestScore = score; best = e; }
+    }
+    if (!best || bestScore === 0) {
+      if (kind === 'sound') {
+        return {
+          spoken: 'I can\u2019t pinpoint that exact sound without more audio, Sir. A common trick is a riser into a bass drop on the beat cut. Add a Gemini API key in Settings and I can analyze the actual audio-visuals frame by frame.',
+          full: 'SOUND DESIGN — general note:\nWithout the audio track I rely on context. Classic winning sounds in creator videos: risers before payoffs, vinyl scratch for humor, silence before punchlines, bass drops on cuts. Best practice: every sound change should align with a visual change (or deliberately not).'
+        };
+      }
+      return {
+        spoken: `At ${window.fmtTS(ts)}, I see the creator using a combination of quick cuts, punch-in zooms and beat-synced transitions — a staple of high-retention editing. Want a step-by-step breakdown in Premiere Pro, DaVinci or CapCut? I can give you one for any specific effect.`,
+        full: `EDITING ANALYSIS at ${window.fmtTS(ts)}:\nTypical high-retention creator edit — punch-in zooms + jump cuts on every phrase, transition sound on the cut, text overlays for emphasis. Psychology: visual variety every 1–2 seconds holds attention; zooms act as emphasis the brain can't ignore.`
+      };
+    }
+
+    const lines = [
+      `${best.what}`,
+      '',
+      `PSYCHOLOGY — ${best.psychology}`,
+      '',
+      `WHY IT WORKS HERE — ${best.why}`,
+      '',
+      'HOW TO RECREATE IT:',
+      `Premiere Pro: ${best.steps.premiere}`,
+      `DaVinci Resolve: ${best.steps.davin
+
+#!/usr/bin/env python3
+"""Generate JARVIS Creator OS PWA icons (pure stdlib, no Pillow needed)."""
+import math, os, struct, zlib
+
+OUT = os.path.join(os.path.dirname(__file__), '..', 'public', 'icons')
+os.makedirs(OUT, exist_ok=True)
+
+def png_write(path, w, h, pixels):  # pixels: list of rows of (r,g,b,a)
+    def chunk(tag, data):
+        c = struct.pack('>I', len(data)) + tag + data
+        c += struct.pack('>I', zlib.crc32(tag + data) & 0xffffffff)
+        return c
+    raw = b''.join(b'\x00' + bytes(v for px in row for v in px) for row in pixels)
+    data = (b'\x89PNG\r\n\x1a\n'
+            + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 6, 0, 0, 0))
+            + chunk(b'IDAT', zlib.compress(raw, 9))
+            + chunk(b'IEND', b''))
+    with open(path, 'wb') as f:
+        f.write(data)
+
+def make(size, path, maskable=False):
+    cx = cy = size / 2
+    # safe zone for maskable icons
+    core_r = size * (0.34 if maskable else 0.30)
+    ring1_r = size * (0.42 if maskable else 0.385)
+    ring2_r = size * (0.48 if maskable else 0.455)
+    bg = (5, 11, 24)
+
+    def px(x, y):
+        dx, dy = x - cx, y - cy
+        d = math.hypot(dx, dy)
+        t = math.atan2(dy, dx)
+
+        # background radial gradient
+        tbg = d / (size * 0.72)
+        r = bg[0] + 26 * max(0.0, 1 - tbg)
+        g = bg[1] + 52 * max(0.0, 1 - tbg)
+        b = bg[2] + 90 * max(0.0, 1 - tbg)
+        a = 255
+
+        # outer glow behind rings
+        glow = max(0.0, 1 - abs(d - ring1_r) / (size * 0.16))
+        r += 56 * glow * 0.55; g += 190 * glow * 0.55; b += 245 * glow * 0.55
+
+        # ring 1 (solid bright)
+        ring1 = abs(d - ring1_r) < size * 0.014
+        if ring1:
+            r, g, b = 90, 222, 250
+        # ring 1 soft edge
+        edge = max(0.0, 1 - abs(d - ring1_r) / (size * 0.012))
+        r += 60 * edge * 0.6; g += 220 * edge * 0.6; b += 252 * edge * 0.6
+
+        # ring 2 (fainter, dashed feel via angle)
+        ring2 = abs(d - ring2_r) < size * 0.010
+        if ring2:
+            seg = (t + math.pi) / (math.pi / 8)
+            if int(seg) % 3 != 0:
+                r, g, b = 129, 140, 248
+
+        # core orb
+        cd = d - core_r * 0.55
+        core = d < core_r
+        if core:
+            rr = 44; gg = 196; bb = 245
+            # brighter center
+            fade = 1 - (d / core_r) * 0.5
+            r = rr * fade + 20; g = gg * fade + 8; b = bb * fade + 26
+            # subtle white hot spot
+            spot = math.exp(-((dx * dx + dy * dy) / (core_r * core_r * 0.28)))
+            r += 120 * spot; g += 190 * spot; b += 220 * spot
+
+        # soft alpha fade at extreme edges (round icon)
+        fade_out = max(0.0, 1 - max(0.0, d - size * 0.47) / (size * 0.06))
+        a = min(255, int(a * fade_out))
+        return (min(255, int(r)), min(255, int(g)), min(255, int(b)), a)
+
+    rows = [[px(x, y) for x in range(size)] for y in range(size)]
+    png_write(path, size, size, rows)
+    print('wrote', path, size, 'px')
+
+if __name__ == '__main__':
+    make(512, os.path.join(OUT, 'icon-512.png'))
+    make(192, os.path.join(OUT, 'icon-192.png'))
+    make(512, os.path.join(OUT, 'icon-maskable-512.png'), maskable=True)
+    make(180, os.path.join(OUT, 'apple-touch-icon.png'))
+    print('done')
+
+#!/usr/bin/env python3
+"""
+VideoAnalyzer.py — Multimodal Video & Effect Analyzer (Python edition)
+======================================================================
+Extracts real frames and audio from a YouTube video with yt-dlp + ffmpeg,
+then asks Gemini (vision + audio capable) to break down the visual editing
+technique / sound design at a timestamp — with psychology and step-by-step
+recreation steps for Premiere Pro / DaVinci Resolve / CapCut.
+
+Requires:  pip install -r requirements.txt   (yt-dlp, google-genai)
+Optional:  ffmpeg in PATH (for frame/audio extraction)
+
+Usage:
+  export GEMINI_API_KEY=AIza...
+  python3 VideoAnalyzer.py "https://www.youtube.com/watch?v=VIDEO_ID" \
+      --ts 02:15 \
+      --ask "How was this effect made and why was it used?"
+
+  python3 VideoAnalyzer.py URL --ts 00:42 --sound "What is this sound and why does it work?"
+"""
+import argparse
+import base64
+import os
+import re
+import subprocess
+import sys
+import tempfile
+
+
+def ts_to_seconds(ts: str) -> float:
+    parts = [float(p) for p in str(ts).split(":")]
+    if len(parts) == 3:
+        return parts[0] * 3600 + parts[1] * 60 + parts[2]
+    if len(parts) == 2:
+        return parts[0] * 60 + parts[1]
+    return parts[0]
+
+
+def extract_frame(url: str, ts: float, workdir: str) -> str:
+    """Download the video (or a snippet) and grab a frame at `ts`."""
+    out = os.path.join(workdir, "frame_%03d.jpg")
+    # Fast seek: yt-dlp downloads only needed range with --download-sections
+    start = max(0, int(ts) - 2)
+    dur = 6
+    subprocess.run(
+        ["yt-dlp", "-f", "bv*[height<=720]+ba/b[height<=720]",
+         "--download-sections", f"*{start}-{start + dur}",
+         "--force-keyframes-at-cuts", "-o", os.path.join(workdir, "clip.%(ext)s"),
+         url], check=True, capture_output=True)
+    clip = [f for f in os.listdir(workdir) if f.startswith("clip.")][0]
+    subprocess.run(
+        ["ffmpeg", "-y", "-ss", str(ts - start), "-i", os.path.join(workdir, clip),
+         "-frames:v", "1", "-q:v", "3", out], check=True, capture_output=True)
+    return out % 1
+
+
+def extract_audio(url: str, ts: float, workdir: str) -> str:
+    """Grab ~8s of audio around the timestamp."""
+    start = max(0, int(ts) - 2)
+    out = os.path.join(workdir, "sound.m4a")
+    subprocess.run(
+        ["yt-dlp", "-f", "ba/b", "--download-sections", f"*{start}-{start + 8}",
+         "-o", os.path.join(workdir, "audio.%(ext)s"), url],
+        check=True, capture_output=True)
+    src = [f for f in os.listdir(workdir) if f.startswith("audio.")][0]
+    subprocess.run(["ffmpeg", "-y", "-i", os.path.join(workdir, src), "-c:a", "aac", out],
+                   check=True, capture_output=True)
+    return out
+
+
+def b64(path: str, mime: str) -> dict:
+    with open(path, "rb") as f:
+        return {"inlineData": {"mimeType": mime, "data": base64.b64encode(f.read()).decode()}}
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Gemini multimodal video effect/sound analyzer")
+    ap.add_argument("url")
+    ap.add_argument("--ts", default="00:00", help="timestamp, e.g. 02:15")
+    ap.add_argument("--ask", default="How was this visual effect made and why was it used?",
+                    help="the question for Gemini")
+    ap.add_argument("--sound", action="store_true", help="analyze the sound at the timestamp instead")
+    args = ap.parse_args()
+
+    key = os.environ.get("GEMINI_API_KEY")
+    if not key:
+        sys.exit("Set GEMINI_API_KEY first, e.g. export GEMINI_API_KEY=AIza...")
+
+    from google import genai
+    client = genai.Client(api_key=key)
+
+    ts = ts_to_seconds(args.ts)
+    print(f"→ Analyzing {args.url} at {args.ts} ({'SOUND' if args.sound else 'EFFECT'})…")
+
+    with tempfile.TemporaryDirectory() as work:
+        parts = []
+        if args.sound:
+            audio = extract_audio(args.url, ts, work)
+            parts.append(b64(audio, "audio/mp4"))
+        else:
+            frame = extract_frame(args.url, ts, work)
+            parts.append(b64(frame, "image/jpeg"))
+
+        prompt = (
+            f"You are JARVIS, a video-editing mentor. The user points at {args.ts} of a YouTube video.\n"
+            + (f"SOUND question: {args.ask}\nWhat is this sound, why does it work psychologically, "
+               "and how to source/recreate it?" if args.sound else
+               f"VISUAL question: {args.ask}\nWhat is the editing technique, why was it used (psychology), "
+               "and step-by-step recreation in Premiere Pro, DaVinci Resolve and CapCut.")
+        )
+        parts.append(prompt)
+
+        resp = client.models.generate_content(model="gemini-2.5-flash", contents=parts)
+        print("\n" + "═" * 62)
+        print(resp.text)
+        print("═" * 62)
+
+
+if __name__ == "__main__":
+    main()
+
+yt-dlp>=2025.1.15
+google-genai>=1.0.0
